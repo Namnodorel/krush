@@ -11,17 +11,22 @@ import javax.lang.model.element.TypeElement
 @KotlinPoetMetadataPreview
 class RealReferencesMappingsGenerator : MappingsGenerator() {
 
-    override fun buildToEntityMapFuncBody(entityType: TypeElement, entity: EntityDefinition, graphs: EntityGraphs, func: FunSpec.Builder,
-                                          entityId: IdDefinition, rootKey: TypeName, rootVal: String, rootIdName: String, rootValId: String): FunSpec {
+    override fun buildToEntityMapFuncBody(
+        entityType: TypeElement,
+        entity: EntityDefinition,
+        graphs: EntityGraphs,
+        func: FunSpec.Builder,
+        entityId: IdDefinition,
+        rootKey: TypeName,
+        rootVal: String,
+        rootIdName: String,
+        rootValId: String
+    ): FunSpec {
+
+        // Map with each entity, identified by its key (usually an Int id)
         func.addStatement("var roots = mutableMapOf<$rootKey, ${entity.name}>()")
 
-        // Add all non-relational data
-        func.addStatement("this.forEach { resultRow ->")
-        func.addStatement("\tval $rootValId = resultRow.getOrNull(${entity.name}Table.${entityId.name}) ?: return@forEach")
-        func.addStatement("\tval $rootVal = roots[$rootValId] ?: resultRow.to${entity.name}()")
-        func.addStatement("\troots[$rootValId] = $rootVal")
-        func.addStatement("}")
-
+        // Initialize maps storing associated data
         val associations = entity.getAssociations(ONE_TO_ONE, ONE_TO_MANY, MANY_TO_MANY)
         associations.forEach { assoc ->
             val target = graphs[assoc.target.packageName]?.get(assoc.target) ?: throw EntityNotMappedException(assoc.target)
@@ -41,50 +46,45 @@ class RealReferencesMappingsGenerator : MappingsGenerator() {
             }
         }
 
-        // Add O2O relational data first, because it recreates the entity objects which destroys potential object references
-        if (associations.any { it.type == ONE_TO_ONE }) {
+        // Add all non-relational data to the roots map
+        func.addStatement("this.forEach { resultRow ->")
+        func.addStatement("\tval $rootValId = resultRow.getOrNull(${entity.name}Table.${entityId.name}) ?: return@forEach")
+        func.addStatement("\tval $rootVal = roots[$rootValId] ?: resultRow.to${entity.name}()")
 
-            func.addStatement("this.groupBy { it.getOrNull(${entity.name}Table.${entityId.name}) }.forEach { ($rootValId, resultRows) ->")
-            func.addStatement("\tif($rootValId == null) return@forEach")
-
-            associations.forEach { assoc ->
-                if (assoc.type != ONE_TO_ONE) {
-                    return@forEach
-                }
-
-                val target = graphs[assoc.target.packageName]?.get(assoc.target) ?: throw EntityNotMappedException(assoc.target)
-                val associationMapName = "${entity.name.asVariable()}_${assoc.name}"
-
-                if (!assoc.mapped) {
-                    func.addStatement("\tresultRows.first().getOrNull(${target.idColumn})?.let {")
-                    func.addStatement("\t\t${assoc.name}_map.get(it)?.let {")
-                    func.addStatement("\t\t\t$associationMapName[$rootValId] = it")
-                    func.addStatement("\t\t}")
-                    func.addStatement("\t}")
-                } else {
-                    val assocVar = assoc.name.asVariable()
-                    func.addStatement("\tval $assocVar = resultRows.to${target.name}List().firstOrNull()")
-                    func.addStatement("\t$assocVar?.let { $associationMapName[${rootValId}] = it }")
-                }
+        // Add data from One-To-One relations
+        var relationCopyBlock = ""
+        associations.forEach { assoc ->
+            if(assoc.type != ONE_TO_ONE) {
+                return@forEach
             }
 
-            func.addStatement("}")
+            val target = graphs[assoc.target.packageName]?.get(assoc.target) ?: throw EntityNotMappedException(assoc.target)
+            val assocVar = assoc.name.asVariable()
 
-            func.addStatement("roots = roots.mapValues { (_, $rootVal) ->")
-            func.addStatement("\t${rootVal}.copy(")
-            associations
-                    .filter { it.type == ONE_TO_ONE }
-                    .forEachIndexed { idx, assoc ->
-                        val sep = if (idx == associations.lastIndex) "" else ","
-                        val associationMapName = "${entity.name.asVariable()}_${assoc.name}"
-                        val value = "$associationMapName[$rootVal.$rootIdName]"
+            if(assoc.nullable) {
+                // If the target ID is present, get the target object. Otherwise, set it to null.
+                func.addStatement("\tval $assocVar: ${target.name}?")
+                func.addStatement("\tval ${assocVar}Id = resultRow.getOrNull(${target.idColumn})")
+                func.addStatement("\tif(${assocVar}Id != null) {")
+                func.addStatement("\t\t$assocVar = resultRow.to${target.name}()")
+                func.addStatement("\t} else {")
+                func.addStatement("\t\t$assocVar = null")
+                func.addStatement("\t}")
+            } else {
+                func.addStatement("\tval $assocVar = resultRow.to${target.name}()")
+            }
 
-                        func.addStatement("\t\t${assoc.name} = $value ?: $rootVal.${assoc.name}$sep")
-
-                    }
-            func.addStatement("\t)")
-            func.addStatement("}.toMutableMap()")
+            // Add a line for the copy() function that adds this relation to the entity
+            relationCopyBlock += "$assocVar = $assocVar,\n"
         }
+
+        if(relationCopyBlock.isNotEmpty()) {
+            func.addStatement("\troots[$rootValId] = ${rootVal}.copy(\n$relationCopyBlock)")
+        } else {
+            func.addStatement("\troots[$rootValId] = $rootVal")
+        }
+
+        func.addStatement("}")
 
         // Add O2M and M2M relations
         if (associations.any { it.type == ONE_TO_MANY || it.type == MANY_TO_MANY }) {
