@@ -279,6 +279,89 @@ assertThat(selectedArticle).isEqualTo(persistedArticle)
 
 Update logic for associations not implemented (yet!) - you have to manually add/remove records from `ArticleTagsTable`.
 
+### Custom column wrappers
+
+Krush exposes some helpful wrappers for user classes to easily convert them to specific columns in database, e.g.
+
+```kotlin
+@JvmInline
+value class MyStringId(val raw: String)
+
+@JvmInline
+value class MyUUID(val raw: UUID)
+
+@JvmInline
+value class MyVersion(val raw: Int)
+
+enum class MyState { ACTIVE, INACTIVE }
+
+fun Table.myStringId(name: String) = stringWrapper(name, ::MyStringId) { it.raw }
+
+fun Table.myUUID(name: String) = uuidWrapper(name, ::MyUUID) { it.raw }
+
+fun Table.myVersion(name: String) = integerWrapper(name, ::MyVersion) { it.raw }
+
+fun Table.myState(name: String) = booleanWrapper(name, { if (it) MyState.ACTIVE else MyState.INACTIVE }) {
+    when (it) {
+        MyState.ACTIVE -> true
+        MyState.INACTIVE -> false
+    }
+}
+
+object MyTable : Table("test") {
+    val id = myStringId("my_id").nullable()
+    val uuid = myUUID("my_uuid").nullable()
+    val version = myVersion("my_version").nullable()
+    val state = myState("my_state").nullable()
+}
+```
+
+### Support for Postgresql `distinct on (...)`
+
+Postgresql allows usage of nonstandard clause [`DISTINCT ON` in queries](https://www.postgresql.org/docs/current/sql-select.html).
+
+Krush provides custom `distinctOn` extension method which can be used as first parameter in custom `slice` extension method.
+
+**Postgresql specific extensions needs `krush-runtime-postgresql` dependency in maven or gradle**
+
+Example code:
+
+```kotlin
+@JvmInline
+value class MyStringId(val raw: String)
+
+@JvmInline
+value class MyVersion(val raw: Int)
+
+fun Table.myStringId(name: String) = stringWrapper(name, ::MyStringId) { it.raw }
+
+fun Table.myVersion(name: String) = integerWrapper(name, ::MyVersion) { it.raw }
+
+
+object MyTable : Table("test") {
+    val id = myStringId("my_id").nullable()
+    val version = myVersion("my_version").nullable()
+    val content = jsonb("content").nullable()
+}
+
+fun findNewestContentVersion(id: MyStringId): String? =
+    MyTable
+        .slice(MyTable.id.distinctOn(), MyTable.content)
+        .select { MyTable.id eq id }
+        .orderBy(MyTable.id to SortOrder.ASC, MyTable.version to SortOrder.DESC)
+        .map { it[MyTable.content] }
+        .firstOrNull()
+```
+
+when `findNewestContentVersion(MyStringId("123"))` is called  will generate SQL:
+
+```postgresql
+SELECT DISTINCT ON (test.my_id) TRUE, test.my_id, test."content"
+FROM test
+WHERE test.my_id = '123'
+ORDER BY test.my_id ASC, test.my_version DESC
+```
+
 ### Example projects
 
 * [https://github.com/TouK/kotlin-exposed-realworld](https://github.com/TouK/kotlin-exposed-realworld)
@@ -288,6 +371,7 @@ Update logic for associations not implemented (yet!) - you have to manually add/
 * [Mateusz Śledź](https://github.com/mateuszsledz)
 * [Piotr Jagielski](https://github.com/pjagielski)
 * [Namnodorel](https://github.com/Namnodorel)
+* [Dominik Przybysz](https://github.com/alien11689)
 
 Special thanks to [Łukasz Jędrzejewski](https://github.com/jedrz) for original idea of using Exposed in our projects.
 
