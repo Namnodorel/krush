@@ -14,7 +14,7 @@ dependencies {
     api(project(":annotation-processor"))
     kapt(project(":annotation-processor"))
 
-    implementation("com.h2database:h2:2.1.210")
+    implementation("com.h2database:h2:2.1.214")
     implementation("org.postgresql:postgresql:${Versions.postgresDriver}")
     implementation("org.flywaydb:flyway-core:9.16.1")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.5.0")
